@@ -1,5 +1,5 @@
 import numpy as np
-import torch 
+import torch
 from scipy.stats import rankdata
 from sklearn.metrics import accuracy_score
 
@@ -113,8 +113,10 @@ def weight_loss(label, mask_token, mask_label):
     one_tensor = torch.where(one_tensor > 1, 1, 0)*max_num
     return mask_label + one_tensor.reshape(-1, max_pred, token_num)
 
-import pandas as pd
 import pdb
+import pandas as pd
+
+
 def testset_test(train_df, test_df):
     train_epitope = set(train_df["peptide"].tolist())
     print("训练集共有数据{}条, 共有epitope{}种".format(len(train_df), len(train_epitope)))
@@ -126,3 +128,26 @@ def testset_test(train_df, test_df):
         print("训练集测试集独立")
     if len(train_epitope) == len(train_epitope-set(test_df["peptide"].tolist())):
         print("epitope zero-shot")
+
+
+def extract_esm2_embeddings(sequences, tokenizer, model, device, max_length, batch_size, d_model=1280):
+    all_embeddings = []
+    for i in range(0, len(sequences), batch_size):
+        batch_seqs = sequences[i:i + batch_size]
+        encoded = tokenizer(
+            batch_seqs,
+            padding='max_length',
+            max_length=max_length + 2,
+            truncation=True,
+            return_tensors='pt'
+        )
+        input_ids = encoded['input_ids'].to(device)
+        attention_mask = encoded['attention_mask'].to(device)
+
+        with torch.no_grad():
+            outputs = model(input_ids, attention_mask=attention_mask)
+            hidden = outputs.last_hidden_state[:, 1:-1, :]
+
+        all_embeddings.append(hidden.reshape(-1, max_length * d_model).float().cpu())
+
+    return torch.cat(all_embeddings, dim=0)
