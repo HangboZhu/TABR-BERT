@@ -21,7 +21,6 @@ class TcrPmhcPredictor:
         self._esm2_encoder: ESM2Encoder | None = None
         self._classifier: TcrPmhcClassifier | None = None
         self._allele_dict: pd.DataFrame | None = None
-        self._healthy_tcr_embeddings: torch.Tensor | None = None
 
     def _ensure_esm2(self) -> ESM2Encoder:
         if self._esm2_encoder is None:
@@ -41,6 +40,8 @@ class TcrPmhcPredictor:
                 pmhc_maxlen=cfg.pmhc_maxlen,
             )
             state_dict = torch.load(cfg.checkpoint_path, map_location=self._device)
+            if any(k.startswith("module.") for k in state_dict):
+                state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
             model.load_state_dict(state_dict)
             model.to(self._device)
             model.eval()
@@ -53,19 +54,17 @@ class TcrPmhcPredictor:
             self._allele_dict = df.set_index("allele")
         return self._allele_dict
 
-    def _ensure_healthy_tcrs(self) -> torch.Tensor:
-        if self._healthy_tcr_embeddings is None:
-            cfg = self.config
-            healthy_df = pd.read_csv(cfg.healthy_tcr_path, nrows=cfg.num_healthy_tcrs)
-            healthy_seqs = healthy_df["cdr3"].tolist()
-            esm2 = self._ensure_esm2()
-            self._healthy_tcr_embeddings = esm2.extract_embeddings(
-                sequences=healthy_seqs,
-                max_length=cfg.tcr_maxlen,
-                d_model=cfg.d_model,
-                batch_size=cfg.embedding_batch_size,
-            )
-        return self._healthy_tcr_embeddings
+    def _extract_healthy_tcrs(self) -> torch.Tensor:
+        cfg = self.config
+        healthy_df = pd.read_csv(cfg.healthy_tcr_path, nrows=cfg.num_healthy_tcrs)
+        healthy_seqs = healthy_df["cdr3"].tolist()
+        esm2 = self._ensure_esm2()
+        return esm2.extract_embeddings(
+            sequences=healthy_seqs,
+            max_length=cfg.tcr_maxlen,
+            d_model=cfg.d_model,
+            batch_size=cfg.embedding_batch_size,
+        )
 
     def _resolve_pmhc_sequences(
         self, peptides: list[str], alleles: list[str]
@@ -156,7 +155,7 @@ class TcrPmhcPredictor:
             batch_size=cfg.embedding_batch_size,
         )
 
-        healthy_emb = self._ensure_healthy_tcrs()
+        healthy_emb = self._extract_healthy_tcrs()
 
         esm2.unload()
 
