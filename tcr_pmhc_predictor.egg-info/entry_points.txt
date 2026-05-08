@@ -1,0 +1,2 @@
+[console_scripts]
+tcr-pmhc-predict = tcr_pmhc_predictor.cli:main

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tcr-pmhc-predictor"
+version = "0.1.0"
+description = "TCR-pMHC binding prediction using ESM2 embeddings"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "transformers",
+    "pandas",
+    "mhcnames",
+    "numpy",
+    "scikit-learn",
+]
+
+[tool.setuptools.packages.find]
+include = ["tcr_pmhc_predictor*"]
+
+[tool.setuptools.package-data]
+tcr_pmhc_predictor = ["data/*.csv"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+tcr-pmhc-predict = "tcr_pmhc_predictor.cli:main"

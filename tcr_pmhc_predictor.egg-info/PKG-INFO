@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: tcr-pmhc-predictor
+Version: 0.1.0
+Summary: TCR-pMHC binding prediction using ESM2 embeddings
+Requires-Python: >=3.10
+License-File: LICENSE
+Requires-Dist: torch
+Requires-Dist: transformers
+Requires-Dist: pandas
+Requires-Dist: mhcnames
+Requires-Dist: numpy
+Requires-Dist: scikit-learn
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Dynamic: license-file

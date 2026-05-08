@@ -1,0 +1,9 @@
+torch
+transformers
+pandas
+mhcnames
+numpy
+scikit-learn
+
+[dev]
+pytest
