@@ -8,7 +8,11 @@ from .predictor import TcrPmhcPredictor
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Predict TCR-pMHC binding using ESM2 embeddings"
+        description="Predict TCR-pMHC binding"
+    )
+    parser.add_argument(
+        "--method", default="esm2", choices=["esm2", "tcr_bert"],
+        help="Embedding method: 'esm2' or 'tcr_bert' (default: esm2)",
     )
     parser.add_argument(
         "--input", required=True, help="Input CSV with peptide, allele, cdr3 columns"
@@ -16,30 +20,31 @@ def main(argv=None):
     parser.add_argument(
         "--output", default="./output/output.csv", help="Output CSV path"
     )
+    parser.add_argument("--healthy_tcr", default="")
+    parser.add_argument("--allele_pseudo_seq", default="")
     parser.add_argument(
-        "--healthy_tcr", default=""
+        "--checkpoint", required=True, help="Path to tcr_pmhc_model.pt"
     )
-    parser.add_argument(
-        "--allele_pseudo_seq",
-        default="",
-    )
-    parser.add_argument(
-        "--checkpoint", required=True, help="Path to trained tcr_pmhc_model.pt"
-    )
-    parser.add_argument(
-        "--esm2_model_dir", required=True, help="Path to ESM2 model directory"
-    )
+
+    # ESM2 args
+    parser.add_argument("--esm2_model_dir", default="", help="ESM2 model directory")
+    parser.add_argument("--d_model", type=int, default=1280, help="ESM2 hidden size")
+
+    # TCR-BERT args
+    parser.add_argument("--tcr_model", default="", help="TCR-BERT TCR encoder weights")
+    parser.add_argument("--pmhc_model", default="", help="TCR-BERT pMHC encoder weights")
+    parser.add_argument("--bert_d_model", type=int, default=256, help="BERT hidden size")
+
+    # Common args
     parser.add_argument("--embedding_batch_size", type=int, default=256)
-    parser.add_argument("--predict_batch_size", type=int, default=1, help="Batch size for ranking inference")
-    parser.add_argument(
-        "--device", default="cuda:0", help="Torch device (e.g. cuda:0, cpu)"
-    )
+    parser.add_argument("--predict_batch_size", type=int, default=1)
     parser.add_argument("--num_healthy_tcrs", type=int, default=1000)
-    parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--device", default="cuda:0")
     args = parser.parse_args(argv)
 
     config = PredictorConfig(
-        esm2_model_dir=args.esm2_model_dir,
+        method=args.method,
         checkpoint_path=args.checkpoint,
         healthy_tcr_path=args.healthy_tcr,
         allele_pseudo_seq_path=args.allele_pseudo_seq,
@@ -48,6 +53,13 @@ def main(argv=None):
         predict_batch_size=args.predict_batch_size,
         num_healthy_tcrs=args.num_healthy_tcrs,
         seed=args.seed,
+        # ESM2
+        esm2_model_dir=args.esm2_model_dir,
+        d_model=args.d_model,
+        # TCR-BERT
+        tcr_model_path=args.tcr_model,
+        pmhc_model_path=args.pmhc_model,
+        bert_d_model=args.bert_d_model,
     )
 
     predictor = TcrPmhcPredictor(config)

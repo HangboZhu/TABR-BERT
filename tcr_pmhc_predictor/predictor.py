@@ -5,7 +5,8 @@ import torch
 
 from .config import PredictorConfig
 from .esm2 import ESM2Encoder
-from .model import TcrPmhcClassifier
+from .model import TcrPmhcClassifier, TcrPmhcClassifierBERT
+from .tcr_bert import TCRBERTEncoder
 
 
 def _set_seed(seed: int):
@@ -19,8 +20,11 @@ class TcrPmhcPredictor:
         self.config = config
         self._device = torch.device(config.device)
         self._esm2_encoder: ESM2Encoder | None = None
-        self._classifier: TcrPmhcClassifier | None = None
+        self._tcr_bert_encoder: TCRBERTEncoder | None = None
+        self._classifier: TcrPmhcClassifier | TcrPmhcClassifierBERT | None = None
         self._allele_dict: pd.DataFrame | None = None
+
+    # ----- encoder lazy loaders -----
 
     def _ensure_esm2(self) -> ESM2Encoder:
         if self._esm2_encoder is None:
@@ -31,22 +35,46 @@ class TcrPmhcPredictor:
             )
         return self._esm2_encoder
 
-    def _ensure_classifier(self) -> TcrPmhcClassifier:
-        if self._classifier is None:
-            cfg = self.config
+    def _ensure_tcr_bert(self) -> TCRBERTEncoder:
+        if self._tcr_bert_encoder is None:
+            self._tcr_bert_encoder = TCRBERTEncoder(
+                tcr_model_path=self.config.tcr_model_path,
+                pmhc_model_path=self.config.pmhc_model_path,
+                device=self._device,
+            )
+        return self._tcr_bert_encoder
+
+    # ----- classifier lazy loader -----
+
+    def _ensure_classifier(self) -> TcrPmhcClassifier | TcrPmhcClassifierBERT:
+        if self._classifier is not None:
+            return self._classifier
+
+        cfg = self.config
+        state_dict = torch.load(cfg.checkpoint_path, map_location=self._device)
+        if any(k.startswith("module.") for k in state_dict):
+            state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
+
+        if cfg.method == "esm2":
             model = TcrPmhcClassifier(
                 d_model=cfg.d_model,
                 tcr_maxlen=cfg.tcr_maxlen,
                 pmhc_maxlen=cfg.pmhc_maxlen,
             )
-            state_dict = torch.load(cfg.checkpoint_path, map_location=self._device)
-            if any(k.startswith("module.") for k in state_dict):
-                state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
-            model.load_state_dict(state_dict)
-            model.to(self._device)
-            model.eval()
-            self._classifier = model
+        else:
+            model = TcrPmhcClassifierBERT(
+                d_model=cfg.bert_d_model,
+                tcr_maxlen=cfg.tcr_maxlen,
+                pmhc_maxlen=cfg.pmhc_maxlen,
+            )
+
+        model.load_state_dict(state_dict)
+        model.to(self._device)
+        model.eval()
+        self._classifier = model
         return self._classifier
+
+    # ----- data helpers -----
 
     def _ensure_allele_dict(self) -> pd.DataFrame:
         if self._allele_dict is None:
@@ -54,31 +82,69 @@ class TcrPmhcPredictor:
             self._allele_dict = df.set_index("allele")
         return self._allele_dict
 
-    def _extract_healthy_tcrs(self) -> torch.Tensor:
-        cfg = self.config
-        healthy_df = pd.read_csv(cfg.healthy_tcr_path, nrows=cfg.num_healthy_tcrs)
-        healthy_seqs = healthy_df["cdr3"].tolist()
-        esm2 = self._ensure_esm2()
-        return esm2.extract_embeddings(
-            sequences=healthy_seqs,
-            max_length=cfg.tcr_maxlen,
-            d_model=cfg.d_model,
-            batch_size=cfg.embedding_batch_size,
-        )
-
-    def _resolve_pmhc_sequences(
-        self, peptides: list[str], alleles: list[str]
-    ) -> list[str]:
+    def _resolve_allele_sequences(self, alleles: list[str]) -> list[str]:
         allele_dict = self._ensure_allele_dict()
         normalized = [mhcnames.normalize_allele_name(a) for a in alleles]
         try:
-            pseudo_seqs = [allele_dict.at[a, "sequence"] for a in normalized]
+            return [allele_dict.at[a, "sequence"] for a in normalized]
         except KeyError as e:
             raise ValueError(
                 f"Allele '{e.args[0]}' not found in pseudo-sequence file "
                 f"({self.config.allele_pseudo_seq_path})."
             ) from e
-        return [ps + p for ps, p in zip(pseudo_seqs, peptides)]
+
+    # ----- embedding extraction -----
+
+    def _extract_esm2_embeddings(self, cdr3s, pmhc_sequences, healthy_seqs):
+        cfg = self.config
+        esm2 = self._ensure_esm2()
+        tcr_emb = esm2.extract_embeddings(
+            sequences=cdr3s,
+            max_length=cfg.tcr_maxlen,
+            d_model=cfg.d_model,
+            batch_size=cfg.embedding_batch_size,
+        )
+        pmhc_emb = esm2.extract_embeddings(
+            sequences=pmhc_sequences,
+            max_length=cfg.pmhc_maxlen,
+            d_model=cfg.d_model,
+            batch_size=cfg.embedding_batch_size,
+        )
+        healthy_emb = esm2.extract_embeddings(
+            sequences=healthy_seqs,
+            max_length=cfg.tcr_maxlen,
+            d_model=cfg.d_model,
+            batch_size=cfg.embedding_batch_size,
+        )
+        esm2.unload()
+        return tcr_emb, pmhc_emb, healthy_emb
+
+    def _extract_tcr_bert_embeddings(self, cdr3s, allele_sequences, peptides, healthy_seqs):
+        cfg = self.config
+        encoder = self._ensure_tcr_bert()
+        tcr_emb = encoder.extract_tcr_embeddings(
+            sequences=cdr3s,
+            max_length=cfg.tcr_maxlen,
+            d_model=cfg.bert_d_model,
+            batch_size=cfg.embedding_batch_size,
+        )
+        pmhc_emb = encoder.extract_pmhc_embeddings(
+            allele_sequences=allele_sequences,
+            peptides=peptides,
+            max_length=cfg.pmhc_maxlen,
+            d_model=cfg.bert_d_model,
+            batch_size=cfg.embedding_batch_size,
+        )
+        healthy_emb = encoder.extract_tcr_embeddings(
+            sequences=healthy_seqs,
+            max_length=cfg.tcr_maxlen,
+            d_model=cfg.bert_d_model,
+            batch_size=cfg.embedding_batch_size,
+        )
+        encoder.unload()
+        return tcr_emb, pmhc_emb, healthy_emb
+
+    # ----- ranking -----
 
     def _compute_ranks(
         self,
@@ -102,17 +168,17 @@ class TcrPmhcPredictor:
                 neg_tcrs = healthy_emb.to(device)
 
                 n_batch = end - start
-                tcr_pos = batch_tcr.unsqueeze(1)  # (B, 1, tcr_dim)
-                neg_expanded = neg_tcrs.unsqueeze(0).expand(n_batch, -1, -1)  # (B, N, tcr_dim)
-                tcr_pool = torch.cat([tcr_pos, neg_expanded], dim=1)  # (B, N+1, tcr_dim)
+                tcr_pos = batch_tcr.unsqueeze(1)
+                neg_expanded = neg_tcrs.unsqueeze(0).expand(n_batch, -1, -1)
+                tcr_pool = torch.cat([tcr_pos, neg_expanded], dim=1)
 
-                pmhc_repeated = batch_pmhc.unsqueeze(1).expand(-1, pool_size, -1)  # (B, N+1, pmhc_dim)
+                pmhc_repeated = batch_pmhc.unsqueeze(1).expand(-1, pool_size, -1)
 
                 tcr_flat = tcr_pool.reshape(n_batch * pool_size, -1)
                 pmhc_flat = pmhc_repeated.reshape(n_batch * pool_size, -1)
 
                 prediction = classifier(torch.cat([tcr_flat, pmhc_flat], dim=1))
-                prediction = prediction.reshape(n_batch, pool_size)  # (B, N+1)
+                prediction = prediction.reshape(n_batch, pool_size)
 
                 for j in range(n_batch):
                     pred_list = prediction[j].tolist()
@@ -120,6 +186,8 @@ class TcrPmhcPredictor:
                     ranks.append(1 - rank)
 
         return ranks
+
+    # ----- main entry point -----
 
     def predict(self, data: pd.DataFrame | list[dict]) -> pd.DataFrame:
         _set_seed(self.config.seed)
@@ -135,31 +203,24 @@ class TcrPmhcPredictor:
             raise ValueError(f"Input data missing required columns: {missing}")
 
         cfg = self.config
-
         peptides = df["peptide"].tolist()
         alleles = df["allele"].tolist()
         cdr3s = df["cdr3"].tolist()
-        pmhc_sequences = self._resolve_pmhc_sequences(peptides, alleles)
+        allele_sequences = self._resolve_allele_sequences(alleles)
 
-        esm2 = self._ensure_esm2()
-        tcr_emb = esm2.extract_embeddings(
-            sequences=cdr3s,
-            max_length=cfg.tcr_maxlen,
-            d_model=cfg.d_model,
-            batch_size=cfg.embedding_batch_size,
-        )
-        pmhc_emb = esm2.extract_embeddings(
-            sequences=pmhc_sequences,
-            max_length=cfg.pmhc_maxlen,
-            d_model=cfg.d_model,
-            batch_size=cfg.embedding_batch_size,
-        )
+        healthy_df = pd.read_csv(cfg.healthy_tcr_path, nrows=cfg.num_healthy_tcrs)
+        healthy_seqs = healthy_df["cdr3"].tolist()
 
-        healthy_emb = self._extract_healthy_tcrs()
-
-        esm2.unload()
+        if cfg.method == "esm2":
+            pmhc_sequences = [ps + p for ps, p in zip(allele_sequences, peptides)]
+            tcr_emb, pmhc_emb, healthy_emb = self._extract_esm2_embeddings(
+                cdr3s, pmhc_sequences, healthy_seqs,
+            )
+        else:
+            tcr_emb, pmhc_emb, healthy_emb = self._extract_tcr_bert_embeddings(
+                cdr3s, allele_sequences, peptides, healthy_seqs,
+            )
 
         ranks = self._compute_ranks(tcr_emb, pmhc_emb, healthy_emb)
         df["rank"] = ranks
-
         return df

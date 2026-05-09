@@ -20,7 +20,7 @@ dependencies = [
 include = ["tcr_pmhc_predictor*"]
 
 [tool.setuptools.package-data]
-tcr_pmhc_predictor = ["data/*.csv"]
+tcr_pmhc_predictor = ["data/*.csv", "data/*.txt"]
 
 [project.optional-dependencies]
 dev = ["pytest"]

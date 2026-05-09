@@ -9,13 +9,13 @@ def _package_data_path(filename: str) -> str:
 
 @dataclass(frozen=True)
 class PredictorConfig:
-    esm2_model_dir: str
-    checkpoint_path: str
+    # --- common ---
+    method: str = "esm2"  # "esm2" or "tcr_bert"
+    checkpoint_path: str = ""
 
     healthy_tcr_path: str = ""
     allele_pseudo_seq_path: str = ""
 
-    d_model: int = 1280
     tcr_maxlen: int = 30
     pmhc_maxlen: int = 54
 
@@ -25,8 +25,19 @@ class PredictorConfig:
     seed: int = 0
     device: str = "cuda:0"
 
+    # --- ESM2 specific ---
+    esm2_model_dir: str = ""
+    d_model: int = 1280
+
+    # --- TCR-BERT specific ---
+    tcr_model_path: str = ""
+    pmhc_model_path: str = ""
+    bert_d_model: int = 256
+
     def __post_init__(self):
         if not self.healthy_tcr_path:
             object.__setattr__(self, "healthy_tcr_path", _package_data_path("small_healthy_tcr.csv"))
         if not self.allele_pseudo_seq_path:
             object.__setattr__(self, "allele_pseudo_seq_path", _package_data_path("mhcflurry.allele_sequences_homo.csv"))
+        if self.method not in ("esm2", "tcr_bert"):
+            raise ValueError(f"method must be 'esm2' or 'tcr_bert', got '{self.method}'")
